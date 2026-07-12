@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.env
+.streamlit/
+*.log
+*.sqlite3
+*.ipynb_checkpoints/
+data/*.csv

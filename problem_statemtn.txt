@@ -1,0 +1,73 @@
+5 AI-Powered Urban Air Quality Intelligence for Smart City
+Intervention
+Theme: Smart Cities / Environmental Intelligence / Geospatial Analytics / Public Health
+PROBLEM CONTEXT
+India's air quality crisis is not a Delhi problem — it is a national urban crisis. In 2024-25, Delhi averaged
+an AQI of 218 (classified 'Poor' or worse for over 200 days), but the situation across other metros is
+nearly as severe: Mumbai recorded dangerous AQI levels on over 60 days in 2024, Kolkata averaged
+AQI above 150 for large parts of the winter season, and Bengaluru and Chennai — long considered
+relatively clean cities — have seen measurable deterioration as vehicle density and construction
+activity surge. CPCB's National Air Quality data for 2024 shows that 24 of India's 50 most polluted cities
+are Tier 1 or Tier 2 urban centres. The Lancet Planetary Health journal estimated 1.67 million
+premature deaths annually from air pollution in India — a public health burden that falls
+disproportionately on urban populations. Despite India deploying over 900 Continuous Ambient Air
+Quality Monitoring Stations (CAAQMS) under the National Clean Air Programme, a 2024 CAG audit
+found that only 31% of cities with monitoring data had any actionable multi-agency response
+protocols linked to those readings. The data exists. The intelligence layer to act on it does not. City
+administrations need more than dashboards. They need geospatial attribution (which sources are
+responsible at this location, right now), predictive forecasting (what will AQI be in 24 hours at ward
+level), and enforcement intelligence (where to deploy inspectors for maximum impact). That
+combination does not exist today.
+CHALLENGE STATEMENT
+Build an AI-powered Urban Air Quality Intelligence platform that fuses monitoring station data,
+satellite imagery, mobility feeds, meteorological forecasts, and geospatial land use layers to move
+from reactive monitoring to proactive, evidence-based intervention — giving city administrators the
+tools to reduce pollution at source rather than just measure it.
+WHAT YOU MAY BUILD
+Participants may explore areas such as:
+• Geospatial Pollution Source Attribution Engine — Multi-modal AI agent that analyses
+spatial-temporal AQI patterns against land use maps, traffic density, construction permits,
+industrial stacks, and satellite-detected thermal anomalies — attributing pollution by source
+category at ward or zone level with statistical confidence scores.
+• Hyperlocal Predictive AQI Forecasting Agent — AI model integrating meteorological
+forecasts, traffic prediction, seasonal emission calendars, and atmospheric dispersion
+modelling to provide 24-72 hour AQI forecasts at 1km grid resolution across city boundaries
+— enabling intervention scheduling rather than reactive advisories.
+• Enforcement Intelligence & Prioritisation Agent — Agent that correlates pollution hotspot
+data with registered emission sources — industries, construction sites, waste burning
+locations, diesel fleet movement — and generates prioritised, evidence-backed enforcement
+action recommendations for municipal and pollution control authorities with supporting
+geospatial documentation.
+• Multi-City Comparative Intelligence Dashboard — Geospatial analytics layer that tracks and
+compares air quality trends, intervention effectiveness, and compliance metrics across
+multiple urban centres — enabling city administrators to learn from interventions that
+worked in comparable cities.
+• Citizen Health Risk Advisory System — AI platform that generates ward-level health risk
+alerts, maps population vulnerability (hospitals, schools, outdoor workers, elderly
+populations) against forecast AQI, and pushes personalised advisories through mobile apps,
+public displays, and IVR in regional languages — Bengaluru in Kannada, Chennai in Tamil,
+and so on.
+These examples are illustrative only.
+SUGGESTED TECHNOLOGIES
+• Geospatial Intelligence & Remote Sensing (Sentinel satellite, MODIS)
+• Multi-Agent AI Systems
+• Real-Time IoT Sensor Data Integration (CAAQMS)
+• Atmospheric Dispersion Modelling
+• Predictive Analytics
+• LLMs for multi-language citizen communication
+EXPECTED DELIVERABLES
+• Working Prototype
+• Architecture Diagram
+• Presentation Deck
+• Demo Video
+Evaluation Focus Source attribution accuracy versus ground-truth emission inventories, AQI forecast
+accuracy at hyperlocal resolution (RMSE versus persistence baseline), enforcement recommendation
+quality rated by domain experts, citizen advisory relevance and language coverage, and demonstrated
+reduction in response time from signal to intervention.
+JUDGING CRITERIA
+Criteria Weight
+Innovation 25%
+Business Impact 25%
+Technical Excellence 20%
+Scalability 15%
+User Experience 15%
