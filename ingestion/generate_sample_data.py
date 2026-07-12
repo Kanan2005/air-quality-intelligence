@@ -5,9 +5,9 @@ cities and stations, spanning 30 days. This exists so that:
   1. The dashboard and forecasting model always have something to demo on,
      even with zero internet access (judges' wifi, offline demo, etc.)
   2. You have a drop-in-compatible schema to validate your pipeline against
-     before wiring up the live OpenAQ key.
+     before wiring up the live government AQI key.
 
-Replace this with real ingestion/openaq_client.py output once you have an
+Replace this with real ingestion/govt_aqi_client.py output once you have an
 API key. Schema is identical either way.
 
 Diurnal + weekly patterns are modeled roughly on published CPCB behaviour:

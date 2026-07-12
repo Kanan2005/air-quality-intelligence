@@ -37,14 +37,61 @@ def attribute_station(hourly_df: pd.DataFrame) -> dict:
     Returns a dict of source_category -> confidence (0-1), plus rationale.
     """
     df = hourly_df.copy()
+    
+    # Guard: check if timestamp column exists and is datetime
+    if "timestamp" not in df.columns:
+        return {
+            "attribution": {"traffic": 0.33, "construction_industrial": 0.33, "regional_background": 0.34},
+            "top_source": "inconclusive",
+            "rationale": {"note": "No timestamp data available"},
+            "note": "Rule-based proxy on time-pattern only — insufficient data for attribution.",
+        }
+    
+    # Convert timestamp to datetime if not already
+    if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+        try:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        except Exception:
+            return {
+                "attribution": {"traffic": 0.33, "construction_industrial": 0.33, "regional_background": 0.34},
+                "top_source": "inconclusive",
+                "rationale": {"note": "Timestamp parsing failed"},
+                "note": "Rule-based proxy on time-pattern only — unable to parse timestamps.",
+            }
+    
+    # Guard: need at least a few data points spread across hours
+    if len(df) < 3 or df["timestamp"].nunique() < 3:
+        return {
+            "attribution": {"traffic": 0.33, "construction_industrial": 0.33, "regional_background": 0.34},
+            "top_source": "inconclusive",
+            "rationale": {"note": "Insufficient temporal resolution (API snapshot)"},
+            "note": "Rule-based proxy on time-pattern only — need multi-hour history for attribution.",
+        }
+    
     df["hour"] = df["timestamp"].dt.hour
     df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
 
     hourly_mean = df.groupby("hour")["aqi"].mean()
-    morning_peak = hourly_mean.loc[7:10].mean()
-    evening_peak = hourly_mean.loc[19:22].mean()
-    midday_flat = hourly_mean.loc[11:17].mean()
-    overnight = hourly_mean.loc[[0, 1, 2, 3, 4]].mean()
+    
+    # Guard: ensure requested hour indices exist before accessing
+    morning_hours = [h for h in range(7, 11) if h in hourly_mean.index]
+    evening_hours = [h for h in range(19, 23) if h in hourly_mean.index]
+    midday_hours = [h for h in range(11, 18) if h in hourly_mean.index]
+    overnight_hours = [h for h in [0, 1, 2, 3, 4] if h in hourly_mean.index]
+    
+    # If not enough hours represented, fall back to equal distribution
+    if not (morning_hours and evening_hours and overnight_hours):
+        return {
+            "attribution": {"traffic": 0.33, "construction_industrial": 0.33, "regional_background": 0.34},
+            "top_source": "inconclusive",
+            "rationale": {"note": "Insufficient hourly coverage"},
+            "note": "Rule-based proxy on time-pattern only — need broader hourly coverage.",
+        }
+    
+    morning_peak = hourly_mean.loc[morning_hours].mean()
+    evening_peak = hourly_mean.loc[evening_hours].mean()
+    midday_flat = hourly_mean.loc[midday_hours].mean() if midday_hours else hourly_mean.mean()
+    overnight = hourly_mean.loc[overnight_hours].mean()
 
     weekday_mean = df[~df["is_weekend"]]["aqi"].mean()
     weekend_mean = df[df["is_weekend"]]["aqi"].mean()

@@ -63,9 +63,23 @@ class AQIForecaster:
         """Trains on all-but-last `holdout_hours`, evaluates on the holdout,
         and reports MAE vs persistence baseline (t-24h) for that holdout."""
         prepped = self.prepare(df)
+        if prepped.empty or len(prepped) < 24:
+            self.trained = False
+            self.mae_ = None
+            self.baseline_mae_ = None
+            return self
+
         cutoff = prepped["timestamp"].max() - pd.Timedelta(hours=holdout_hours)
-        train = prepped[prepped["timestamp"] <= cutoff]
-        test = prepped[prepped["timestamp"] > cutoff]
+        train = prepped[prepped["timestamp"] <= cutoff].copy()
+        test = prepped[prepped["timestamp"] > cutoff].copy()
+        train = train.dropna(subset=FEATURE_COLS + ["aqi"])
+        test = test.dropna(subset=FEATURE_COLS + ["aqi"])
+
+        if len(train) < 12 or train[FEATURE_COLS].dropna().empty:
+            self.trained = False
+            self.mae_ = None
+            self.baseline_mae_ = None
+            return self
 
         self.model.fit(train[FEATURE_COLS], train["aqi"])
         self.trained = True
@@ -90,7 +104,16 @@ class AQIForecaster:
         (must contain columns: timestamp, aqi, sorted ascending).
         """
         if not self.trained:
-            raise RuntimeError("Call .fit() before forecasting.")
+            hist = history[["timestamp", "aqi"]].sort_values("timestamp").copy()
+            if hist.empty:
+                return pd.DataFrame(columns=["timestamp", "predicted_aqi"])
+            last_aqi = float(hist["aqi"].dropna().iloc[-1]) if hist["aqi"].dropna().size else 0.0
+            preds = []
+            last_ts = hist["timestamp"].max()
+            for step in range(1, horizon_hours + 1):
+                future_ts = last_ts + pd.Timedelta(hours=step)
+                preds.append({"timestamp": future_ts, "predicted_aqi": round(last_aqi, 1)})
+            return pd.DataFrame(preds)
 
         hist = history[["timestamp", "aqi"]].sort_values("timestamp").copy()
         last_ts = hist["timestamp"].max()

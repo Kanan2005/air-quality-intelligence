@@ -18,9 +18,8 @@ pip install -r requirements.txt
 # 2. Generate sample data (works offline, no API key needed)
 cd ingestion && python3 generate_sample_data.py && cd ..
 
-# 3. (Optional but recommended before your demo) get a free OpenAQ key:
-#    https://explore.openaq.org/register
-export OPENAQ_API_KEY="your_key_here"
+# 3. (Optional) override the default government API key:
+export GOVT_AQI_API_KEY="your_key_here"
 
 # 4. Launch the dashboard
 streamlit run dashboard/app.py
@@ -34,7 +33,7 @@ you skip step 3 — useful for unreliable venue wifi.
 ```
 air-quality-intelligence/
 ├── ingestion/
-│   ├── openaq_client.py         # Live OpenAQ API client + CPCB AQI conversion
+│   ├── govt_aqi_client.py       # Live government AQI client + CPCB AQI conversion
 │   └── generate_sample_data.py  # Realistic synthetic fallback dataset
 ├── forecasting/
 │   ├── aqi_forecast.py          # RandomForest 24-72h forecaster + baseline benchmark
@@ -49,8 +48,8 @@ air-quality-intelligence/
 
 ## What's genuinely working right now
 
-- **Real data pipeline**: OpenAQ v3 client pulls actual CPCB-backed station
-  readings for 8 major Indian cities (free API key required).
+- **Real data pipeline**: the dashboard now pulls live station readings from the
+  government AQI endpoint for major Indian cities using the supplied API key.
 - **Trained forecasting model**: RandomForest on lag + time-of-day features,
   benchmarked against a persistence baseline (the exact metric the
   hackathon's own evaluation criteria asks for) — currently ~24% MAE

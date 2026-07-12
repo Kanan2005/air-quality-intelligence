@@ -37,10 +37,9 @@
 
 ## Why these choices (for judge Q&A)
 
-- **OpenAQ, not raw CPCB scraping**: CPCB's own CAAQMS portal has no public
-  API and scraping it is fragile/ToS-risky. OpenAQ ingests CPCB feeds and
-  re-publishes them via a clean, free, rate-limited REST API — same
-  underlying government data, zero cost, stable schema.
+- **Government AQI endpoint, not raw CPCB scraping**: the project now uses the
+  government data portal's free AQI endpoint directly, which avoids the fragility
+  of scraping and keeps the ingestion path simple and reproducible.
 - **RandomForest over deep learning**: 30 days of hourly per-station data
   (~720 points/station) is too little for an LSTM/Transformer to
   meaningfully outperform a well-featured tree ensemble, and RF gives free,
@@ -56,7 +55,7 @@
 
 | Component | Status |
 |---|---|
-| Data ingestion (OpenAQ) | Real, live API, free key |
+| Data ingestion (government AQI API) | Real, live API, free key |
 | Forecasting model | Real, trained on real/sample history, benchmarked vs baseline |
 | Map + dashboard | Real, fully interactive |
 | Health advisory text | Real logic, English only |
@@ -66,9 +65,8 @@
 
 ## Recommended next steps (in priority order for remaining hackathon time)
 
-1. **Get a free OpenAQ API key** (`https://explore.openaq.org/register`,
-   ~2 min) and set `OPENAQ_API_KEY` before the demo — swaps sample data
-   for live station readings with zero code changes.
+1. **Use the provided government API key** and set `GOVT_AQI_API_KEY` before the
+   demo — this switches the app from sample data to live station readings.
 
 2. **Add NASA FIRMS fire/thermal anomaly data** (also free, no key needed
    for basic use: `https://firms.modaps.eosdis.nasa.gov/api/`). This is
