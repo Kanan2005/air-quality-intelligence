@@ -7,6 +7,7 @@ Ties together:
   - ingestion/openaq_client.py  (live government AQI data, falls back to sample data)
   - forecasting/aqi_forecast.py (24-72h hyperlocal forecast + baseline comparison)
   - forecasting/source_attribution.py (heuristic source attribution)
+  - geospatial/*                (pollution source-attribution agent)
   - Citizen health advisory panel (rule-based on AQI thresholds; regional
     language strings are stubbed — see docs/architecture.md for the
     upgrade path to full LLM-generated multilingual advisories)
@@ -16,7 +17,9 @@ import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent / "ingestion"))
 sys.path.append(str(Path(__file__).resolve().parent.parent / "forecasting"))
+sys.path.append(str(Path(__file__).resolve().parent.parent / "geospatial"))
 
+import asyncio
 import streamlit as st
 import pandas as pd
 import folium
@@ -24,10 +27,18 @@ from streamlit_folium import st_folium
 import plotly.graph_objects as go
 
 from govt_aqi_client import GovernmentAQIClient, INDIAN_CITIES
+from aqi_forecast import AQIForecaster
+from source_attribution_forecasting import attribute_station
+
+from aqi_service import fetch_aqi
+from weather_service import fetch_weather
+from geospatial_service import fetch_geospatial_features
+from fire_service import fetch_fire_data
+from source_attribution import get_model
+from feature_engineering import build_feature_vector, compute_data_quality_flags
+from explainability import build_explanation, compute_confidence_score
 
 OpenAQClient = GovernmentAQIClient
-from aqi_forecast import AQIForecaster
-from source_attribution import attribute_station
 
 st.set_page_config(page_title="Urban Air Quality Intelligence", layout="wide")
 
@@ -87,15 +98,16 @@ def load_history(city: str):
 
 st.title("🌫️ Urban Air Quality Intelligence")
 st.caption(
-    "Free-data prototype for ET AI Hackathon 2026 · Source: Government AQI API · "
+    "Free-data prototype; "
     "Zero-cost, software-only stack"
 )
 
-# ---------- Navigation tabs (navbar) ----------
-tab_forecasting, tab_insights, tab_settings = st.tabs([
+# ---------- Navigation tabs (navbar) — ONE call, ONE set of tabs ----------
+tab_forecasting, tab_geospatial, tab_insights, tab_settings = st.tabs([
     "📊 ForeCasting",
+    "🗺️ Geospatial Source Attribution",
     "📈 Insights",
-    "⚙️ Settings"
+    "⚙️ Settings",
 ])
 
 with st.sidebar:
@@ -124,8 +136,7 @@ else:
 # ========== FORECASTING TAB ==========
 with tab_forecasting:
     st.header("ForeCasting & Real-Time Monitoring")
-    
-    # ---------- Top KPI row ----------
+
     city_avg_aqi = latest["aqi"].mean()
     band_label, band_color = aqi_band(city_avg_aqi)
     col1, col2, col3, col4 = st.columns(4)
@@ -138,7 +149,6 @@ with tab_forecasting:
 
     st.divider()
 
-    # ---------- Map + Forecast side by side ----------
     map_col, forecast_col = st.columns([1, 1])
 
     with map_col:
@@ -195,7 +205,6 @@ with tab_forecasting:
 
     st.divider()
 
-    # ---------- Enforcement priority ----------
     if not latest.empty:
         st.subheader("🚨 Enforcement Priority Queue")
         worst = latest.sort_values("aqi", ascending=False).head(10)
@@ -213,10 +222,95 @@ with tab_forecasting:
         "see docs/architecture.md for the real-data upgrade path."
     )
 
+# ========== GEOSPATIAL TAB ==========
+with tab_geospatial:
+    st.header("Geospatial Pollution Source Attribution")
+    st.caption("Click anywhere on the map")
+
+    india_map = folium.Map(location=[22.5, 80], zoom_start=5, tiles="CartoDB positron")
+    map_state = st_folium(india_map, width=None, height=480, key="geo_map")
+
+    lat, lon = 28.6139, 77.2090
+    if map_state and map_state.get("last_clicked"):
+        lat, lon = map_state["last_clicked"]["lat"], map_state["last_clicked"]["lng"]
+
+    col_lat, col_lon, col_radius = st.columns(3)
+    lat = col_lat.number_input("Latitude", value=lat, format="%.6f")
+    lon = col_lon.number_input("Longitude", value=lon, format="%.6f")
+    radius_km = col_radius.slider("Search radius (km)", 1, 50, 3)
+
+    if st.button("Analyze Pollution Sources"):
+        aqi_data = asyncio.run(fetch_aqi(lat, lon, radius_km))
+        weather_data = asyncio.run(fetch_weather(lat, lon))
+        geo_data = asyncio.run(fetch_geospatial_features(lat, lon, radius_km))
+        fire_data = asyncio.run(fetch_fire_data(lat, lon, radius_km))
+
+        if aqi_data.get("is_distant_fallback"):
+            st.warning(
+                f"No monitored station within {radius_km} km. Showing data from the "
+                f"nearest available CPCB station, {aqi_data['station_distance_km']} km away."
+            )
+
+        feature_vector = build_feature_vector(aqi_data, weather_data, geo_data, fire_data)
+        source_contribution, tree_agreement = get_model().predict(feature_vector)
+        flags = compute_data_quality_flags(aqi_data, weather_data, geo_data, fire_data)
+        confidence = compute_confidence_score(tree_agreement, flags, aqi_data)
+        explanation, dominant_source, recommendations = build_explanation(
+            source_contribution, aqi_data, weather_data, geo_data, fire_data
+        )
+
+        st.metric("AQI", aqi_data["aqi"], aqi_data["category"])
+        is_live = "live" in aqi_data.get("source", "")
+        if is_live:
+            distance_note = ""
+            if aqi_data.get("station_distance_km") is not None:
+                distance_note = f" · nearest station {aqi_data['station_distance_km']} km away"
+                if aqi_data.get("is_distant_fallback"):
+                    distance_note += " (beyond your search radius)"
+            st.success(f"✅ Live CPCB station data{distance_note}")
+        else:
+            st.warning("⚠️ Synthetic fallback data — CPCB station data was unavailable for this point.")
+        st.bar_chart(source_contribution)
+        st.markdown(f"**Dominant source:** {dominant_source} · **Confidence:** {confidence:.1f}%")
+        st.info(explanation)
+        st.write(recommendations)
+        st.divider()
+        st.subheader("📡 Context Data")
+
+        ctx_col1, ctx_col2, ctx_col3 = st.columns(3)
+
+        with ctx_col1:
+            st.markdown("**🌤️ Weather**")
+            st.write(f"Temperature: {weather_data['temperature_c']}°C")
+            st.write(f"Humidity: {weather_data['humidity_pct']}%")
+            st.write(f"Wind: {weather_data['wind_speed_mps']} m/s @ {weather_data['wind_direction_deg']}°")
+            st.write(f"Pressure: {weather_data['pressure_hpa']} hPa")
+            st.caption(f"Source: {weather_data['source']}")
+
+        with ctx_col2:
+            st.markdown("**🛣️ Land Use / Geospatial**")
+            st.write(f"Road density: {geo_data['road_density_km_per_km2']} km/km²")
+            st.write(f"Major roads nearby: {geo_data['major_road_count']}")
+            st.write(f"Industrial land: {geo_data['industrial_area_ratio']*100:.1f}%")
+            st.write(f"Construction sites: {int(geo_data['construction_site_count'])}")
+            st.write(f"Green cover: {geo_data['green_cover_ratio']*100:.1f}%")
+            st.caption(f"Source: {geo_data['source']}")
+
+        with ctx_col3:
+            st.markdown("**🔥 Fire / Biomass Burning**")
+            st.write(f"Active fire hotspots: {fire_data['active_fire_count']}")
+            if fire_data.get("nearest_fire_distance_km") is not None:
+                st.write(f"Nearest hotspot: {fire_data['nearest_fire_distance_km']} km away")
+            else:
+                st.write("Nearest hotspot: none detected")
+            if fire_data.get("mean_frp_mw") is not None:
+                st.write(f"Mean fire intensity: {fire_data['mean_frp_mw']} MW")
+            st.caption(f"Source: {fire_data['source']}")
+
 # ========== INSIGHTS TAB ==========
 with tab_insights:
     st.header("📈 Air Quality Insights")
-    st.info("💡 Coming soon: Geospatial source attribution, trend analysis, and comparative city statistics.")
+    st.info("💡 Coming soon: trend analysis and comparative city statistics.")
 
 # ========== SETTINGS TAB ==========
 with tab_settings:
