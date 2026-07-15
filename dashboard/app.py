@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent / "ingestion"))
 sys.path.append(str(Path(__file__).resolve().parent.parent / "forecasting"))
 sys.path.append(str(Path(__file__).resolve().parent.parent / "geospatial"))
-
+sys.path.append(str(Path(__file__).resolve().parent.parent / "hyperlocal_forecast"))
 import asyncio
 import streamlit as st
 import pandas as pd
@@ -29,7 +29,8 @@ import plotly.graph_objects as go
 from govt_aqi_client import GovernmentAQIClient, INDIAN_CITIES
 from aqi_forecast import AQIForecaster
 from source_attribution_forecasting import attribute_station
-
+from openmeteo_client import fetch_hyperlocal_forecast
+from groq_advisory import generate_multilingual_advisory
 from aqi_service import fetch_aqi
 from weather_service import fetch_weather
 from geospatial_service import fetch_geospatial_features
@@ -37,6 +38,8 @@ from fire_service import fetch_fire_data
 from source_attribution import get_model
 from feature_engineering import build_feature_vector, compute_data_quality_flags
 from explainability import build_explanation, compute_confidence_score
+
+from mock_data import _pm25_to_aqi, _aqi_category
 
 OpenAQClient = GovernmentAQIClient
 
@@ -102,10 +105,10 @@ st.caption(
     "Zero-cost, software-only stack"
 )
 
-# ---------- Navigation tabs (navbar) — ONE call, ONE set of tabs ----------
-tab_forecasting, tab_geospatial, tab_insights, tab_settings = st.tabs([
+tab_forecasting, tab_geospatial, tab_hyperlocal, tab_insights, tab_settings = st.tabs([
     "📊 ForeCasting",
     "🗺️ Geospatial Source Attribution",
+    "🔮 Hyperlocal Forecasting",
     "📈 Insights",
     "⚙️ Settings",
 ])
@@ -223,6 +226,7 @@ with tab_forecasting:
     )
 
 # ========== GEOSPATIAL TAB ==========
+# ========== GEOSPATIAL TAB ==========
 with tab_geospatial:
     st.header("Geospatial Pollution Source Attribution")
     st.caption("Click anywhere on the map")
@@ -230,13 +234,16 @@ with tab_geospatial:
     india_map = folium.Map(location=[22.5, 80], zoom_start=5, tiles="CartoDB positron")
     map_state = st_folium(india_map, width=None, height=480, key="geo_map")
 
-    lat, lon = 28.6139, 77.2090
+    st.session_state.setdefault("geo_lat", 28.6139)
+    st.session_state.setdefault("geo_lon", 77.2090)
+
     if map_state and map_state.get("last_clicked"):
-        lat, lon = map_state["last_clicked"]["lat"], map_state["last_clicked"]["lng"]
+        st.session_state["geo_lat"] = map_state["last_clicked"]["lat"]
+        st.session_state["geo_lon"] = map_state["last_clicked"]["lng"]
 
     col_lat, col_lon, col_radius = st.columns(3)
-    lat = col_lat.number_input("Latitude", value=lat, format="%.6f")
-    lon = col_lon.number_input("Longitude", value=lon, format="%.6f")
+    lat = col_lat.number_input("Latitude", format="%.6f", key="geo_lat")
+    lon = col_lon.number_input("Longitude", format="%.6f", key="geo_lon")
     radius_km = col_radius.slider("Search radius (km)", 1, 50, 3)
 
     if st.button("Analyze Pollution Sources"):
@@ -307,6 +314,74 @@ with tab_geospatial:
                 st.write(f"Mean fire intensity: {fire_data['mean_frp_mw']} MW")
             st.caption(f"Source: {fire_data['source']}")
 
+
+# ========== HYPERLOCAL FORECAST TAB ==========
+with tab_hyperlocal:
+    st.header("🔮 Hyperlocal AQI Forecasting")
+    st.caption("Click anywhere in the world")
+
+    india_map_h = folium.Map(location=[22.5, 80], zoom_start=5, tiles="CartoDB positron")
+    map_state_h = st_folium(india_map_h, width=None, height=460, key="hyperlocal_map")
+
+    st.session_state.setdefault("hyperlocal_lat", 28.6139)
+    st.session_state.setdefault("hyperlocal_lon", 77.2090)
+
+    if map_state_h and map_state_h.get("last_clicked"):
+        st.session_state["hyperlocal_lat"] = map_state_h["last_clicked"]["lat"]
+        st.session_state["hyperlocal_lon"] = map_state_h["last_clicked"]["lng"]
+
+    col_a, col_b = st.columns(2)
+    h_lat = col_a.number_input("Latitude", format="%.6f", key="hyperlocal_lat")
+    h_lon = col_b.number_input("Longitude", format="%.6f", key="hyperlocal_lon")
+
+    languages = st.multiselect(
+        "Advisory languages",
+        ["English", "Hindi", "Bengali", "Tamil", "Telugu", "Marathi", "Gujarati", "Kannada", "Punjabi"],
+        default=["English", "Hindi"],
+    )
+
+    if st.button("Get Forecast", key="hyperlocal_btn"):
+        hourly = asyncio.run(fetch_hyperlocal_forecast(h_lat, h_lon))
+
+        df = pd.DataFrame({
+            "time": pd.to_datetime(hourly["time"]),
+            "pm2_5": hourly["pm2_5"],
+            "pm10": hourly["pm10"],
+        })
+
+        df["india_aqi"] = df["pm2_5"].apply(_pm25_to_aqi)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df["time"], y=df["india_aqi"], name="India AQI", line=dict(color="#d62728")))
+        fig.update_layout(height=380, yaxis_title="India AQI", xaxis_title=None)
+        st.plotly_chart(fig, width="stretch")
+
+        peak_row = df.loc[df["india_aqi"].idxmax()]
+        peak_aqi = int(peak_row["india_aqi"])
+
+        def _india_aqi_category(aqi):
+            if aqi <= 50: return "Good"
+            if aqi <= 100: return "Satisfactory"
+            if aqi <= 200: return "Moderate"
+            if aqi <= 300: return "Poor"
+            if aqi <= 400: return "Very Poor"
+            return "Severe"
+
+        category = _india_aqi_category(peak_aqi)
+        st.metric("Peak forecasted AQI (next 5 days)", peak_aqi, category)
+        st.caption(f"Peak expected around {peak_row['time']}")
+
+        SEVERE_THRESHOLD = 200
+        if peak_aqi >= SEVERE_THRESHOLD:
+            st.warning("⚠️ Forecast crosses into unhealthy territory — generating health advisory...")
+            dominant_pollutant = "PM2.5" if df["pm2_5"].max() >= df["pm10"].max() / 1.6 else "PM10"
+            advisory = asyncio.run(
+                generate_multilingual_advisory(peak_aqi, category, dominant_pollutant, languages or ["English"])
+            )
+            st.markdown(advisory)
+        else:
+            st.success("✅ No severe AQI levels forecasted in the next 5 days for this location.")
+            
 # ========== INSIGHTS TAB ==========
 with tab_insights:
     st.header("📈 Air Quality Insights")
