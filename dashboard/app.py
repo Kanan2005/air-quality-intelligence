@@ -39,7 +39,7 @@ from source_attribution import get_model
 from feature_engineering import build_feature_vector, compute_data_quality_flags
 from explainability import build_explanation, compute_confidence_score
 
-from mock_data import _pm25_to_aqi, _aqi_category
+from mock_data import india_aqi_from_pollutants, _pm25_to_aqi, _pm10_to_aqi, _aqi_category
 
 OpenAQClient = GovernmentAQIClient
 
@@ -343,44 +343,111 @@ with tab_hyperlocal:
     if st.button("Get Forecast", key="hyperlocal_btn"):
         hourly = asyncio.run(fetch_hyperlocal_forecast(h_lat, h_lon))
 
+        n_hours = len(hourly["time"])
         df = pd.DataFrame({
             "time": pd.to_datetime(hourly["time"]),
             "pm2_5": hourly["pm2_5"],
             "pm10": hourly["pm10"],
+            "us_aqi": hourly.get("us_aqi", [None] * n_hours),
         })
 
-        df["india_aqi"] = df["pm2_5"].apply(_pm25_to_aqi)
+        df["pm2_5"] = df["pm2_5"].interpolate(limit=3, limit_direction="both")
+        df["pm10"] = df["pm10"].interpolate(limit=3, limit_direction="both")
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df["time"], y=df["india_aqi"], name="India AQI", line=dict(color="#d62728")))
-        fig.update_layout(height=380, yaxis_title="India AQI", xaxis_title=None)
-        st.plotly_chart(fig, width="stretch")
+        df["india_aqi_raw"] = df.apply(
+            lambda r: india_aqi_from_pollutants(r["pm2_5"], r["pm10"]), axis=1
+        )
 
-        peak_row = df.loc[df["india_aqi"].idxmax()]
-        peak_aqi = int(peak_row["india_aqi"])
+        # --- Live-station calibration -----------------------------------
+        # Open-Meteo's air quality forecast only has high-resolution (11km)
+        # coverage over Europe. Everywhere else, including India, falls
+        # back to the coarse 45km global CAMS model, which is known to
+        # over-predict dust-driven PM10 in arid/desert-adjacent regions
+        # (e.g. Rajasthan) since it isn't locally validated against Indian
+        # ground stations. Where a live CPCB station is available nearby,
+        # anchor the forecast to it rather than trusting the raw model.
+        calibration_ratio = None
+        calibration_note = None
+        try:
+            anchor = asyncio.run(fetch_aqi(h_lat, h_lon, 25))
+            is_live_anchor = "live" in anchor.get("source", "") and not anchor.get("is_distant_fallback")
+            current_forecast_aqi = df["india_aqi_raw"].dropna().iloc[0] if df["india_aqi_raw"].notna().any() else None
+            if is_live_anchor and current_forecast_aqi and current_forecast_aqi > 0:
+                raw_ratio = anchor["aqi"] / current_forecast_aqi
+                calibration_ratio = float(min(max(raw_ratio, 0.3), 1.5))
+                calibration_note = (
+                    f"Calibrated against live CPCB station ({anchor['aqi']} AQI now) "
+                )
+        except Exception:
+            pass  # calibration is best-effort; fall through to raw forecast below
 
-        def _india_aqi_category(aqi):
-            if aqi <= 50: return "Good"
-            if aqi <= 100: return "Satisfactory"
-            if aqi <= 200: return "Moderate"
-            if aqi <= 300: return "Poor"
-            if aqi <= 400: return "Very Poor"
-            return "Severe"
-
-        category = _india_aqi_category(peak_aqi)
-        st.metric("Peak forecasted AQI (next 5 days)", peak_aqi, category)
-        st.caption(f"Peak expected around {peak_row['time']}")
-
-        SEVERE_THRESHOLD = 200
-        if peak_aqi >= SEVERE_THRESHOLD:
-            st.warning("⚠️ Forecast crosses into unhealthy territory — generating health advisory...")
-            dominant_pollutant = "PM2.5" if df["pm2_5"].max() >= df["pm10"].max() / 1.6 else "PM10"
-            advisory = asyncio.run(
-                generate_multilingual_advisory(peak_aqi, category, dominant_pollutant, languages or ["English"])
-            )
-            st.markdown(advisory)
+        if calibration_ratio is not None:
+            df["india_aqi"] = (df["india_aqi_raw"] * calibration_ratio).round().clip(0, 1000)
         else:
-            st.success("✅ No severe AQI levels forecasted in the next 5 days for this location.")
+            df["india_aqi"] = df["india_aqi_raw"]
+
+        missing_hours = df["india_aqi"].isna().sum()
+        df_valid = df.dropna(subset=["india_aqi"])
+
+        if df_valid.empty:
+            st.error("No usable pollutant data was returned for this location — try a different point or check back later.")
+        else:
+            if calibration_note:
+                st.caption(f"📡 {calibration_note}")
+            else:
+                st.caption(
+                    "ℹ️ No live nearby station available to calibrate against — showing the raw global forecast "
+                    "model estimate, which can run high for dust-prone regions."
+                )
+            if missing_hours:
+                st.caption(
+                    f"⚠️ {missing_hours} of {len(df)} forecast hours had incomplete pollutant data "
+                    "(filled from neighboring hours where possible, otherwise excluded)."
+                )
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=df_valid["time"], y=df_valid["india_aqi"], name="India AQI", line=dict(color="#d62728")))
+            fig.update_layout(height=380, yaxis_title="India AQI", xaxis_title=None)
+            st.plotly_chart(fig, width="stretch")
+
+            peak_row = df_valid.loc[df_valid["india_aqi"].idxmax()]
+            peak_aqi = int(peak_row["india_aqi"])
+            category = _aqi_category(peak_aqi)
+            st.metric("Peak forecasted AQI (next 5 days)", peak_aqi, category)
+            st.caption(f"Peak expected around {peak_row['time']}")
+
+            # Show which pollutant + concentration actually drove this peak,
+            # and how it compares to neighboring hours, so a genuine event
+            # can be told apart from a single-hour forecast-model artifact.
+            peak_pm25_aqi = _pm25_to_aqi(peak_row["pm2_5"])
+            peak_pm10_aqi = _pm10_to_aqi(peak_row["pm10"])
+            driver = "PM2.5" if (peak_pm25_aqi or -1) >= (peak_pm10_aqi or -1) else "PM10"
+            peak_idx = df_valid.index.get_loc(peak_row.name) if peak_row.name in df_valid.index else None
+            neighbor_note = ""
+            if peak_idx is not None and 0 < peak_idx < len(df_valid) - 1:
+                prev_val = df_valid.iloc[peak_idx - 1]["india_aqi"]
+                next_val = df_valid.iloc[peak_idx + 1]["india_aqi"]
+                if peak_aqi - max(prev_val, next_val) > 150:
+                    neighbor_note = (
+                        f" ⚠️ This is {peak_aqi - max(prev_val, next_val):.0f} points above its neighboring hours "
+                        f"({prev_val:.0f} → **{peak_aqi}** → {next_val:.0f}) — worth treating as a possible "
+                        "forecast-model spike rather than a confirmed event."
+                    )
+            st.caption(
+                f"Driven by **{driver}**: PM2.5={peak_row['pm2_5']:.1f} µg/m³, PM10={peak_row['pm10']:.1f} µg/m³."
+                f"{neighbor_note}"
+            )
+
+            SEVERE_THRESHOLD = 200
+            if peak_aqi >= SEVERE_THRESHOLD:
+                st.warning("⚠️ Forecast crosses into unhealthy territory — generating health advisory...")
+                dominant_pollutant = "PM2.5" if df_valid["pm2_5"].max() >= df_valid["pm10"].max() / 1.6 else "PM10"
+                advisory = asyncio.run(
+                    generate_multilingual_advisory(peak_aqi, category, dominant_pollutant, languages or ["English"])
+                )
+                st.markdown(advisory)
+            else:
+                st.success("✅ No severe AQI levels forecasted in the next 5 days for this location.")
             
 # ========== INSIGHTS TAB ==========
 with tab_insights:

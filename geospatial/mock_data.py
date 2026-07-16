@@ -61,8 +61,19 @@ def mock_aqi(lat: float, lon: float) -> Dict:
     }
 
 
-def _pm25_to_aqi(pm25: float) -> int:
-    """Convert PM2.5 concentration (ug/m3) to Indian-style AQI (simplified breakpoints)."""
+def _is_missing(value) -> bool:
+    return value is None or (isinstance(value, float) and math.isnan(value))
+
+
+def _pm25_to_aqi(pm25: float) -> int | None:
+    """Convert PM2.5 concentration (ug/m3) to Indian-style AQI (simplified breakpoints).
+
+    Returns None if pm25 is missing/NaN or out of the supported physical range,
+    rather than silently defaulting to a "Severe" (500) reading -- a missing
+    value is not evidence of severe pollution.
+    """
+    if _is_missing(pm25):
+        return None
     breakpoints = [
         (0, 30, 0, 50),
         (30, 60, 50, 100),
@@ -75,7 +86,44 @@ def _pm25_to_aqi(pm25: float) -> int:
         if c_lo <= pm25 <= c_hi:
             aqi = (a_hi - a_lo) / (c_hi - c_lo) * (pm25 - c_lo) + a_lo
             return int(round(aqi))
-    return 500
+    return 500 if pm25 > 500 else None
+
+
+def _pm10_to_aqi(pm10: float) -> int | None:
+    """Convert PM10 concentration (ug/m3) to Indian-style AQI (CPCB breakpoints).
+
+    Used as a fallback sub-index when PM2.5 is unavailable for an hour but
+    PM10 is present -- CPCB's real India AQI is the max sub-index across
+    pollutants, so PM10 is a legitimate independent signal, not a proxy.
+    """
+    if _is_missing(pm10):
+        return None
+    breakpoints = [
+        (0, 50, 0, 50),
+        (50, 100, 50, 100),
+        (100, 250, 100, 200),
+        (250, 350, 200, 300),
+        (350, 430, 300, 400),
+        (430, 500, 400, 500),
+    ]
+    for c_lo, c_hi, a_lo, a_hi in breakpoints:
+        if c_lo <= pm10 <= c_hi:
+            aqi = (a_hi - a_lo) / (c_hi - c_lo) * (pm10 - c_lo) + a_lo
+            return int(round(aqi))
+    return 500 if pm10 > 500 else None
+
+
+def india_aqi_from_pollutants(pm25: float, pm10: float) -> int | None:
+    """Combine PM2.5 and PM10 sub-indices into a single India AQI reading.
+
+    CPCB's real India AQI is defined as the max sub-index across measured
+    pollutants. Here we only have PM2.5 and PM10 available from the
+    hyperlocal forecast source, so we take the max of whichever sub-index(es)
+    are computable for this hour. Returns None only if neither pollutant has
+    a usable reading.
+    """
+    candidates = [aqi for aqi in (_pm25_to_aqi(pm25), _pm10_to_aqi(pm10)) if aqi is not None]
+    return max(candidates) if candidates else None
 
 
 def _aqi_category(aqi: int) -> str:

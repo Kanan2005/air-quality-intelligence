@@ -21,5 +21,12 @@ async def fetch_hyperlocal_forecast(lat: float, lon: float, forecast_days: int =
         resp.raise_for_status()
         data = resp.json()
 
-    logger.info("Open-Meteo forecast fetched for (%s, %s)", lat, lon)
-    return data.get("hourly", {})
+    hourly = data.get("hourly", {})
+    n_hours = len(hourly.get("time", []))
+    pm25_missing = sum(1 for v in hourly.get("pm2_5", []) if v is None)
+    pm10_missing = sum(1 for v in hourly.get("pm10", []) if v is None)
+    logger.info(
+        "Open-Meteo forecast fetched for (%s, %s): %d hours, pm2_5 missing=%d, pm10 missing=%d",
+        lat, lon, n_hours, pm25_missing, pm10_missing,
+    )
+    return hourly
