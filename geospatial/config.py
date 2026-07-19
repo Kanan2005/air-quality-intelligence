@@ -36,9 +36,15 @@ class Settings(BaseSettings):
     OPENWEATHER_API_KEY: Optional[str] = None
     NASA_FIRMS_MAP_KEY: Optional[str] = None
     CPCB_API_KEY: Optional[str] = None
+    TOMTOM_API_KEY: Optional[str] = None
+    GROQ_API_KEY: Optional[str] = None
 
     # --- External API base URLs ---
     OPENWEATHER_BASE_URL: str = "https://api.openweathermap.org/data/2.5"
+    # TomTom Traffic API v4 -- Flow Segment Data (live congestion by point)
+    TOMTOM_TRAFFIC_BASE_URL: str = "https://api.tomtom.com/traffic/services/4"
+    TOMTOM_TIMEOUT_SECONDS: float = 10.0
+    GROQ_CHAT_URL: str = "https://api.groq.com/openai/v1/chat/completions"
     OVERPASS_BASE_URL: str = "https://overpass-api.de/api/interpreter"
     # Public Overpass mirror, used as a retry target if the primary instance
     # times out (overpass-api.de is a shared free instance and gets

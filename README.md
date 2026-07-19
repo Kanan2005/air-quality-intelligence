@@ -21,6 +21,11 @@ cd ingestion && python3 generate_sample_data.py && cd ..
 # 3. (Optional) override the default government API key:
 export GOVT_AQI_API_KEY="your_key_here"
 
+# 3b. (Optional) enable live traffic + LLM-generated advisories/history
+#     (both fall back to synthetic/static data if unset):
+export TOMTOM_API_KEY="your_tomtom_key_here"     # https://developer.tomtom.com/
+export GROQ_API_KEY="your_groq_key_here"         # https://console.groq.com/
+
 # 4. Launch the dashboard
 streamlit run dashboard/app.py
 ```

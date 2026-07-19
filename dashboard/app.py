@@ -37,9 +37,12 @@ from aqi_service import fetch_aqi
 from weather_service import fetch_weather
 from geospatial_service import fetch_geospatial_features
 from fire_service import fetch_fire_data
+from traffic_service import fetch_traffic_congestion
+from history_service import generate_pollution_source_history
 from source_attribution import get_model
 from feature_engineering import build_feature_vector, compute_data_quality_flags
 from explainability import build_explanation, compute_confidence_score
+from action_plan_advisory import generate_action_plan
 
 from mock_data import india_aqi_from_pollutants, _pm25_to_aqi, _pm10_to_aqi, _aqi_category
 
@@ -47,13 +50,176 @@ OpenAQClient = GovernmentAQIClient
 
 st.set_page_config(page_title="Urban Air Quality Intelligence", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    /* Hide the Deploy button */
+    .stAppDeployButton {
+        display: none !important;
+    }
+
+    /* ---- Action plan / advisory card styling ---- */
+    .ap-citizen-box {
+        background: linear-gradient(135deg, #fff4e5 0%, #ffe8e8 100%);
+        border-left: 5px solid #d62728;
+        border-radius: 10px;
+        padding: 16px 20px;
+        margin: 10px 0 18px 0;
+    }
+    .ap-citizen-box h4 {
+        margin: 0 0 8px 0;
+        color: #7a1f1f;
+    }
+    .ap-card {
+        background: #ffffff;
+        border: 1px solid #e6e6e6;
+        border-left: 5px solid var(--ap-accent, #1f77b4);
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .ap-card h4 {
+        margin: 0 0 8px 0;
+        font-size: 1.02rem;
+        letter-spacing: 0.2px;
+    }
+    .ap-card ul {
+        margin: 0;
+        padding-left: 20px;
+    }
+    .ap-card li {
+        margin-bottom: 6px;
+        line-height: 1.45;
+        color: #262730;
+    }
+    .ap-model-card {
+        background: #f5f8ff;
+        border: 1px solid #d9e2f5;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+    }
+    .ap-model-card .ap-model-title {
+        font-weight: 600;
+        color: #1a3d8f;
+    }
+    .ap-model-card .ap-model-result {
+        color: #444;
+        font-size: 0.92rem;
+    }
+    .ap-source-note {
+        font-size: 0.78rem;
+        color: #888;
+        margin-top: -4px;
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+def _render_bullet_card(title: str, icon: str, bullets: list, accent: str):
+    """Render a professional-styled bullet card for an action-plan category."""
+    items = [b for b in (bullets or []) if b and str(b).strip()]
+    if not items:
+        return
+
+    bullets_html = "".join(
+        f"<li style='color:#374151;'>{b}</li>" for b in items
+    )
+
+    st.markdown(
+        f"""
+        <div class="ap-card" style="--ap-accent:{accent};">
+            <h4 style="color:#111827; font-weight:700;">
+                {icon} {title}
+            </h4>
+            <ul>{bullets_html}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+def render_action_plan(plan: dict):
+    """Render a Groq-generated action plan as professional-style UI bullet cards."""
+    citizen_bullets = [b for b in (plan.get("citizen_advisory") or []) if b and str(b).strip()]
+    if citizen_bullets:
+        bullets_html = "".join(f"<li style='color:#374151;'>{b}</li>" for b in citizen_bullets)
+        st.markdown(
+            f"""
+            <div class="ap-citizen-box">
+                <h4 style="color:#111827;">🧑‍🤝‍🧑 Citizen Risk Advisory</h4>
+                <ul>{bullets_html}</ul>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        _render_bullet_card("Traffic Control", "🚦", plan.get("traffic_control"), "#1f77b4")
+        _render_bullet_card("Industrial Emission Control", "🏭", plan.get("industrial_emission_control"), "#8c564b")
+        _render_bullet_card("Other Recommendations", "💡", plan.get("other_suggestions"), "#9467bd")
+    with col2:
+        _render_bullet_card("Vehicle Emission Control", "🚗", plan.get("vehicle_emission_control"), "#ff7f0e")
+        _render_bullet_card("Agricultural Biomass Burning Control", "🌾", plan.get("agri_biomass_control"), "#2ca02c")
+
+    # models = plan.get("successful_city_models") or []
+    # if models:
+    #     st.markdown(
+    #         """
+    #         <div class='ap-card' style='--ap-accent:#17a2b8;'>
+    #             <h4 style='color:#111827;'>🏆 Successful Models Adopted by Cities</h4>
+    #         </div>
+    #         """,
+    #         unsafe_allow_html=True,
+    #     )
+
+    #     for m in models:
+    #         if not isinstance(m, dict):
+    #             continue
+
+    #         city = m.get("city", "")
+    #         model_name = m.get("model", "")
+    #         result = m.get("result", "")
+
+    #         st.markdown(
+    #             f"""
+    #             <div class="ap-model-card">
+    #                 <div class="ap-model-title" style="color:#111827;font-weight:700;">
+    #                     {city} — {model_name}
+    #                 </div>
+    #                 <div class="ap-model-result" style="color:#4b5563;">
+    #                     {result}
+    #                 </div>
+    #             </div>
+    #             """,
+    #             unsafe_allow_html=True,
+    #         )
+
+    # source = plan.get("source", "")
+    # if source and source != "static_fallback":
+    #     st.markdown(
+    #         f"<div class='ap-source-note' style='color:#6b7280;'>Generated by LLM ({source}) — verify before formal deployment.</div>",
+    #         unsafe_allow_html=True,
+    #     )
+    # else:
+    #     st.markdown(
+    #         "<div class='ap-source-note' style='color:#6b7280;'>Static fallback plan — configure GROQ_API_KEY for a location-tailored, LLM-generated plan.</div>",
+    #         unsafe_allow_html=True,
+    #     )
+
+
+
 AQI_BANDS = [
-    (0, 50, "Good", "#00A651"),
-    (51, 100, "Satisfactory", "#A3C853"),
-    (101, 200, "Moderate", "#FFD700"),
-    (201, 300, "Poor", "#FF7E00"),
-    (301, 400, "Very Poor", "#FF0000"),
-    (401, 500, "Severe", "#7E0023"),
+    (0, 50, "Clean ✅", "#00A651"),
+    (51, 100, "Satisfactory ▲", "#A3C853"),
+    (101, 200, "Moderate ⚖", "#FFD700"),
+    (201, 300, "Poor 🔻", "#FF7E00"),
+    (301, 400, "Very Poor 📉", "#FF0000"),
+    (401, 500, "Severe ⚠️", "#7E0023")
 ]
 
 CITY_POPULATION_PROXY = {
@@ -76,17 +242,17 @@ def aqi_band(aqi):
     return "Severe", "#7E0023"
 
 
-def health_advisory(aqi):
-    if aqi <= 100:
-        return "Air quality is acceptable. Outdoor activity is safe for all groups."
-    elif aqi <= 200:
-        return "Sensitive groups (children, elderly, respiratory/heart conditions) should reduce prolonged outdoor exertion."
-    elif aqi <= 300:
-        return "Everyone may experience mild effects. Sensitive groups should avoid outdoor exertion; consider masks (N95) outdoors."
-    elif aqi <= 400:
-        return "Health warning: everyone should limit outdoor exertion. Sensitive groups should stay indoors."
-    else:
-        return "Health emergency: avoid all outdoor exposure. Keep windows closed; use air purifiers if available."
+# def health_advisory(aqi):
+#     if aqi <= 100:
+#         return "Air quality is acceptable. Outdoor activity is safe for all groups."
+#     elif aqi <= 200:
+#         return "Sensitive groups (children, elderly, respiratory/heart conditions) should reduce prolonged outdoor exertion."
+#     elif aqi <= 300:
+#         return "Everyone may experience mild effects. Sensitive groups should avoid outdoor exertion; consider masks (N95) outdoors."
+#     elif aqi <= 400:
+#         return "Health warning: everyone should limit outdoor exertion. Sensitive groups should stay indoors."
+#     else:
+#         return "Health emergency: avoid all outdoor exposure. Keep windows closed; use air purifiers if available."
 
 
 def _prepare_city_frame(history: pd.DataFrame, period: str):
@@ -192,16 +358,15 @@ def load_history(city: str):
 
 st.title("🌫️ Urban Air Quality Intelligence")
 st.caption(
-    "Free-data prototype; "
-    "Zero-cost, software-only stack"
+    "Smarter cities begin with cleaner air. "
+    "Intelligence beyond monitoring."
 )
 
-tab_forecasting, tab_geospatial, tab_hyperlocal, tab_insights, tab_settings = st.tabs([
-    "📊 ForeCasting",
+tab_forecasting, tab_geospatial, tab_hyperlocal, tab_insights= st.tabs([
+    "📊 Real-Time Monitoring",
     "🗺️ Geospatial Source Attribution",
     "🔮 Hyperlocal Forecasting",
-    "📈 Insights",
-    "⚙️ Settings",
+    "📈 Insights"
 ])
 
 with st.sidebar:
@@ -212,11 +377,10 @@ with st.sidebar:
     client = OpenAQClient()
     st.markdown(
         "**Data mode:** " +
-        ("🔑 Live Government AQI API" if client.api_key else "📦 Sample data (no API key set)")
+        ("🔑 Live Government API" if client.api_key else "")
     )
     st.markdown(
-        "The app now uses the government AQI endpoint with the supplied API key. "
-        "Set `GOVT_AQI_API_KEY` to override it."
+        "The app uses the government AQI endpoint with the supplied API key. "
     )
 
 history = load_history(city)
@@ -229,73 +393,75 @@ else:
 
 # ========== FORECASTING TAB ==========
 with tab_forecasting:
-    st.header("ForeCasting & Real-Time Monitoring")
+    st.header("Real-Time Monitoring")
 
     city_avg_aqi = latest["aqi"].mean()
     band_label, band_color = aqi_band(city_avg_aqi)
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric(f"{city} Current AQI (avg)", f"{city_avg_aqi:.0f}", band_label)
+    col1.metric(f"{city} Current AQI (avg)", f"{city_avg_aqi:.0f}")
+
+    col1.markdown(
+        f"<span style='color:{band_color}; font-weight:600;'>{band_label}</span>",
+        unsafe_allow_html=True,
+    )
     col2.metric("Stations Reporting", len(latest))
     col3.metric("Worst Station AQI", f"{latest['aqi'].max():.0f}")
     col4.metric("Best Station AQI", f"{latest['aqi'].min():.0f}")
 
-    st.markdown(f"**Health Advisory:** {health_advisory(city_avg_aqi)}")
+    # st.markdown(f"**Health Advisory:** {health_advisory(city_avg_aqi)}")
 
     st.divider()
 
-    map_col, forecast_col = st.columns([1, 1])
+    st.subheader("📍 Station Map (real-time)")
+    center_lat, center_lon = INDIAN_CITIES[city]
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="CartoDB positron")
+    for _, row in latest.iterrows():
+        label, color = aqi_band(row["aqi"])
+        folium.CircleMarker(
+            location=[row["lat"], row["lon"]],
+            radius=12,
+            popup=f"{row['station']}<br>AQI: {row['aqi']:.0f} ({label})",
+            color=color,
+            fill=True,
+            fill_color=color,
+            fill_opacity=0.8,
+        ).add_to(m)
+    st_folium(m, height=420, width=None)
 
-    with map_col:
-        st.subheader("📍 Station Map (real-time)")
-        center_lat, center_lon = INDIAN_CITIES[city]
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="CartoDB positron")
-        for _, row in latest.iterrows():
-            label, color = aqi_band(row["aqi"])
-            folium.CircleMarker(
-                location=[row["lat"], row["lon"]],
-                radius=12,
-                popup=f"{row['station']}<br>AQI: {row['aqi']:.0f} ({label})",
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.8,
-            ).add_to(m)
-        st_folium(m, width=None, height=420)
+    # with forecast_col:
+    #     st.subheader(f"📈 {horizon}h Forecast — busiest station")
+    #     if len(history["station"].unique()) == 0:
+    #         st.info("No station data available for this city.")
+    #     else:
+    #         station_choice = st.selectbox("Station", sorted(history["station"].unique()))
+    #         station_hist = history[history["station"] == station_choice].sort_values("timestamp") if "timestamp" in history.columns else history[history["station"] == station_choice]
 
-    with forecast_col:
-        st.subheader(f"📈 {horizon}h Forecast — busiest station")
-        if len(history["station"].unique()) == 0:
-            st.info("No station data available for this city.")
-        else:
-            station_choice = st.selectbox("Station", sorted(history["station"].unique()))
-            station_hist = history[history["station"] == station_choice].sort_values("timestamp") if "timestamp" in history.columns else history[history["station"] == station_choice]
+    #         fig = go.Figure()
+    #         recent = station_hist.tail(72)
+    #         if not recent.empty and "aqi" in recent.columns and recent["aqi"].notna().any():
+    #             fig.add_trace(go.Scatter(x=recent["timestamp"] if "timestamp" in recent.columns else range(len(recent)), y=recent["aqi"], name="Observed", line=dict(color="#1f77b4")))
 
-            fig = go.Figure()
-            recent = station_hist.tail(72)
-            if not recent.empty and "aqi" in recent.columns and recent["aqi"].notna().any():
-                fig.add_trace(go.Scatter(x=recent["timestamp"] if "timestamp" in recent.columns else range(len(recent)), y=recent["aqi"], name="Observed", line=dict(color="#1f77b4")))
+    #         if len(station_hist) > 24:
+    #             forecaster = AQIForecaster().fit(station_hist)
+    #             forecast_df = forecaster.forecast_station(station_hist, horizon_hours=horizon)
+    #             if not forecast_df.empty:
+    #                 fig.add_trace(go.Scatter(x=forecast_df["timestamp"], y=forecast_df["predicted_aqi"],
+    #                                          name="Forecast", line=dict(color="#ff7f0e", dash="dash")))
+    #             if forecaster.mae_ is not None and forecaster.baseline_mae_ not in {None, 0}:
+    #                 caption_text = (
+    #                     f"Model MAE: **{forecaster.mae_:.1f}** vs Persistence baseline MAE: "
+    #                     f"**{forecaster.baseline_mae_:.1f}** "
+    #                     f"({(1 - forecaster.mae_/forecaster.baseline_mae_)*100:.0f}% improvement)"
+    #                 )
+    #             else:
+    #                 caption_text = "Forecasting is using a simple fallback because the available history is too short for model training."
+    #         else:
+    #             caption_text = "⚠️ Current data is a snapshot without historical time series. Forecast model requires at least 24 hours of history. Using sample data would enable forecasting."
 
-            if len(station_hist) > 24:
-                forecaster = AQIForecaster().fit(station_hist)
-                forecast_df = forecaster.forecast_station(station_hist, horizon_hours=horizon)
-                if not forecast_df.empty:
-                    fig.add_trace(go.Scatter(x=forecast_df["timestamp"], y=forecast_df["predicted_aqi"],
-                                             name="Forecast", line=dict(color="#ff7f0e", dash="dash")))
-                if forecaster.mae_ is not None and forecaster.baseline_mae_ not in {None, 0}:
-                    caption_text = (
-                        f"Model MAE: **{forecaster.mae_:.1f}** vs Persistence baseline MAE: "
-                        f"**{forecaster.baseline_mae_:.1f}** "
-                        f"({(1 - forecaster.mae_/forecaster.baseline_mae_)*100:.0f}% improvement)"
-                    )
-                else:
-                    caption_text = "Forecasting is using a simple fallback because the available history is too short for model training."
-            else:
-                caption_text = "⚠️ Current data is a snapshot without historical time series. Forecast model requires at least 24 hours of history. Using sample data would enable forecasting."
-
-            fig.update_layout(height=380, margin=dict(l=10, r=10, t=30, b=10),
-                              yaxis_title="AQI", xaxis_title=None, legend=dict(orientation="h"))
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(caption_text)
+    #         fig.update_layout(height=380, margin=dict(l=10, r=10, t=30, b=10),
+    #                           yaxis_title="AQI", xaxis_title=None, legend=dict(orientation="h"))
+    #         st.plotly_chart(fig, use_container_width=True)
+    #         st.caption(caption_text)
 
     st.divider()
 
@@ -311,12 +477,8 @@ with tab_forecasting:
             st.caption("Ranked by current AQI. Production version would weight by population density + vulnerable site proximity.")
 
     st.divider()
-    st.caption(
-        "⚠️ The dashboard now displays the latest API snapshot when available and falls back to sample data only if the API returns no usable rows. "
-        "see docs/architecture.md for the real-data upgrade path."
-    )
 
-# ========== GEOSPATIAL TAB ==========
+
 # ========== GEOSPATIAL TAB ==========
 with tab_geospatial:
     st.header("Geospatial Pollution Source Attribution")
@@ -340,8 +502,9 @@ with tab_geospatial:
     if st.button("Analyze Pollution Sources"):
         aqi_data = asyncio.run(fetch_aqi(lat, lon, radius_km))
         weather_data = asyncio.run(fetch_weather(lat, lon))
-        geo_data = asyncio.run(fetch_geospatial_features(lat, lon, radius_km))
+        # geo_data = asyncio.run(fetch_geospatial_features(lat, lon, radius_km))
         fire_data = asyncio.run(fetch_fire_data(lat, lon, radius_km))
+        traffic_data = asyncio.run(fetch_traffic_congestion(lat, lon))
 
         if aqi_data.get("is_distant_fallback"):
             st.warning(
@@ -349,12 +512,12 @@ with tab_geospatial:
                 f"nearest available CPCB station, {aqi_data['station_distance_km']} km away."
             )
 
-        feature_vector = build_feature_vector(aqi_data, weather_data, geo_data, fire_data)
+        feature_vector = build_feature_vector(aqi_data, weather_data,traffic_data, fire_data)
         source_contribution, tree_agreement = get_model().predict(feature_vector)
-        flags = compute_data_quality_flags(aqi_data, weather_data, geo_data, fire_data)
+        flags = compute_data_quality_flags(aqi_data, weather_data, traffic_data, fire_data)
         confidence = compute_confidence_score(tree_agreement, flags, aqi_data)
         explanation, dominant_source, recommendations = build_explanation(
-            source_contribution, aqi_data, weather_data, geo_data, fire_data
+            source_contribution, aqi_data, weather_data, traffic_data, fire_data
         )
 
         st.metric("AQI", aqi_data["aqi"], aqi_data["category"])
@@ -371,11 +534,11 @@ with tab_geospatial:
         st.bar_chart(source_contribution)
         st.markdown(f"**Dominant source:** {dominant_source} · **Confidence:** {confidence:.1f}%")
         st.info(explanation)
-        st.write(recommendations)
+        # st.write(recommendations)
         st.divider()
-        st.subheader("📡 Context Data")
+        st.subheader("Context Data")
 
-        ctx_col1, ctx_col2, ctx_col3 = st.columns(3)
+        ctx_col1, ctx_col3, ctx_col4 = st.columns(3)
 
         with ctx_col1:
             st.markdown("**🌤️ Weather**")
@@ -385,16 +548,27 @@ with tab_geospatial:
             st.write(f"Pressure: {weather_data['pressure_hpa']} hPa")
             st.caption(f"Source: {weather_data['source']}")
 
-        with ctx_col2:
-            st.markdown("**🛣️ Land Use / Geospatial**")
-            st.write(f"Road density: {geo_data['road_density_km_per_km2']} km/km²")
-            st.write(f"Major roads nearby: {geo_data['major_road_count']}")
-            st.write(f"Industrial land: {geo_data['industrial_area_ratio']*100:.1f}%")
-            st.write(f"Construction sites: {int(geo_data['construction_site_count'])}")
-            st.write(f"Green cover: {geo_data['green_cover_ratio']*100:.1f}%")
-            st.caption(f"Source: {geo_data['source']}")
+        # with ctx_col2:
+        #     st.markdown("**🛣️ Land Use / Geospatial**")
+        #     st.write(f"Road density: {geo_data['road_density_km_per_km2']} km/km²")
+        #     st.write(f"Major roads nearby: {geo_data['major_road_count']}")
+        #     st.write(f"Industrial land: {geo_data['industrial_area_ratio']*100:.1f}%")
+        #     st.write(f"Construction sites: {int(geo_data['construction_site_count'])}")
+        #     st.write(f"Green cover: {geo_data['green_cover_ratio']*100:.1f}%")
+        #     st.caption(f"Source: {geo_data['source']}")
 
         with ctx_col3:
+            st.markdown("**🚦 Traffic Congestion**")
+            st.write(f"Congestion: {traffic_data['congestion_level']}")
+            st.write(f"Current speed: {traffic_data['current_speed_kmph']} km/h")
+            st.write(f"Free-flow speed: {traffic_data['free_flow_speed_kmph']} km/h")
+            if traffic_data.get("road_closure"):
+                st.write("⚠️ Road closure reported nearby")
+            if traffic_data.get("confidence") is not None:
+                st.write(f"Confidence: {traffic_data['confidence']}")
+            st.caption(f"Source: {traffic_data['source']} (TomTom)")
+
+        with ctx_col4:
             st.markdown("**🔥 Fire / Biomass Burning**")
             st.write(f"Active fire hotspots: {fire_data['active_fire_count']}")
             if fire_data.get("nearest_fire_distance_km") is not None:
@@ -404,6 +578,50 @@ with tab_geospatial:
             if fire_data.get("mean_frp_mw") is not None:
                 st.write(f"Mean fire intensity: {fire_data['mean_frp_mw']} MW")
             st.caption(f"Source: {fire_data['source']}")
+
+        st.divider()
+        st.subheader("📜 Pollution Source History")
+        st.caption(
+            "Industrial sites and agricultural biomass-burning "
+            "activity historically associated with this area — treat as investigative context."
+        )
+        with st.spinner("Looking up industrial & biomass-burning history for this location..."):
+            history_data = asyncio.run(
+                generate_pollution_source_history(lat, lon, geo_data=traffic_data, fire_data=fire_data)
+            )
+
+        hist_col1, hist_col2 = st.columns(2)
+        with hist_col1:
+            st.markdown("**🏭 Industrial History**")
+            industrial_items = history_data.get("industrial_history") or []
+            if industrial_items:
+                for item in industrial_items:
+                    if not isinstance(item, dict):
+                        continue
+                    site = item.get("site_or_sector", "")
+                    period = item.get("period", "")
+                    note = item.get("note", "")
+                    label = f"**{site}**" + (f" ({period})" if period else "")
+                    st.markdown(f"- {label} — {note}")
+            else:
+                st.write("No notable industrial history surfaced for this location.")
+
+        with hist_col2:
+            st.markdown("**🌾 Biomass Burning History**")
+            burning_items = history_data.get("biomass_burning_history") or []
+            if burning_items:
+                for item in burning_items:
+                    if not isinstance(item, dict):
+                        continue
+                    period = item.get("season_or_period", "")
+                    note = item.get("note", "")
+                    label = f"**{period}**" if period else "**Historical pattern**"
+                    st.markdown(f"- {label} — {note}")
+            else:
+                st.write("No notable biomass-burning history surfaced for this location.")
+
+        if history_data.get("summary"):
+            st.info(history_data["summary"])
 
 
 # ========== HYPERLOCAL FORECAST TAB ==========
@@ -529,17 +747,48 @@ with tab_hyperlocal:
                 f"{neighbor_note}"
             )
 
+            dominant_pollutant = "PM2.5" if df_valid["pm2_5"].max() >= df_valid["pm10"].max() / 1.6 else "PM10"
+
             SEVERE_THRESHOLD = 200
             if peak_aqi >= SEVERE_THRESHOLD:
                 st.warning("⚠️ Forecast crosses into unhealthy territory — generating health advisory...")
-                dominant_pollutant = "PM2.5" if df_valid["pm2_5"].max() >= df_valid["pm10"].max() / 1.6 else "PM10"
                 advisory = asyncio.run(
                     generate_multilingual_advisory(peak_aqi, category, dominant_pollutant, languages or ["English"])
                 )
                 st.markdown(advisory)
             else:
                 st.success("✅ No severe AQI levels forecasted in the next 5 days for this location.")
-            
+
+            st.divider()
+            st.subheader("🏛️ Citizen Risk Advisory & Government Action Plan")
+            st.markdown(
+                """
+                <p style="color: black; font-size: 0.875rem; margin-top: -0.5rem;">
+                    AI-generated, context-grounded recommendations covering traffic, vehicle,
+                    industrial and agricultural biomass emission control — plus models that have
+                    worked for other cities.
+                </p>
+                """,
+                unsafe_allow_html=True,
+            )
+            with st.spinner("Pulling local context (traffic, land use, fire activity) and drafting an action plan..."):
+                h_traffic_data = asyncio.run(fetch_traffic_congestion(h_lat, h_lon))
+                # h_geo_data = asyncio.run(fetch_geospatial_features(h_lat, h_lon, 5))
+                h_aqi_data = asyncio.run(fetch_aqi(h_lat, h_lon, 50))
+                h_fire_data = asyncio.run(fetch_fire_data(h_lat, h_lon, 5))
+                action_plan = asyncio.run(
+                    generate_action_plan(
+                        peak_aqi,
+                        category,
+                        dominant_pollutant,
+                        location_label=f"{h_lat:.4f}, {h_lon:.4f}",
+                        traffic_data=h_traffic_data,
+                        geo_data=h_aqi_data,
+                        fire_data=h_fire_data,
+                    )
+                )
+            render_action_plan(action_plan)
+
 # ========== INSIGHTS TAB ==========
 with tab_insights:
     st.header("UrbanLens — Multi-City Comparative Intelligence")
@@ -578,7 +827,7 @@ with tab_insights:
             status = "Better" if metric_key == "aqi" and val_a < val_b else "Higher risk" if metric_key == "risk" and val_a > val_b else "Lower" if metric_key == "pm25" and val_a < val_b else "Lower exposure"
             st.markdown(f"<div style='border:1px solid #e5e7eb; border-radius: 12px; padding: 0.85rem; background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);'>"
                         f"<div style='font-size:0.82rem; color:#64748b;'>{name}</div>"
-                        f"<div style='font-size:1.5rem; font-weight:700; margin-top:0.25rem;'>{city_a}: {val_a:.0f}</div>"
+                        f"<div style='font-size:1.5rem; color:#0f766e; font-weight:700; margin-top:0.25rem;'>{city_a}: {val_a:.0f}</div>"
                         f"<div style='font-size:0.9rem; color:#475569; margin:0.2rem 0 0.25rem 0;'>vs {city_b}: {val_b:.0f}</div>"
                         f"<div style='font-size:0.8rem; color:#0f766e; font-weight:600;'>Δ {delta:+.1f}% · {status}</div></div>", unsafe_allow_html=True)
             if len(summary_a["trend"]) > 1:
@@ -623,72 +872,72 @@ with tab_insights:
     st.divider()
 
     st.markdown("<h4 style='margin-bottom: 0.25rem;'>Comparative Analytics</h4>", unsafe_allow_html=True)
-    analytics_col_1, analytics_col_2 = st.columns([1.2, 1])
-    with analytics_col_1:
-        trend_df = pd.DataFrame({
-            "date": pd.concat([summary_a["daily"]["date"], summary_b["daily"]["date"]], ignore_index=True),
-            "city": [city_a] * len(summary_a["daily"]) + [city_b] * len(summary_b["daily"]),
-            "aqi": list(summary_a["daily"]["aqi"]) + list(summary_b["daily"]["aqi"]),
-        })
-        fig = px.line(trend_df, x="date", y="aqi", color="city", markers=True, height=280)
-        fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), legend_title_text="City")
-        st.plotly_chart(fig, use_container_width=True)
+    # analytics_col_2 = st.columns(1)
+    # with analytics_col_1:
+    #     trend_df = pd.DataFrame({
+    #         "date": pd.concat([summary_a["daily"]["date"], summary_b["daily"]["date"]], ignore_index=True),
+    #         "city": [city_a] * len(summary_a["daily"]) + [city_b] * len(summary_b["daily"]),
+    #         "aqi": list(summary_a["daily"]["aqi"]) + list(summary_b["daily"]["aqi"]),
+    #     })
+    #     fig = px.line(trend_df, x="date", y="aqi", color="city", markers=True, height=280)
+    #     fig.update_layout(margin=dict(l=10, r=10, t=10, b=10), legend_title_text="City")
+    #     st.plotly_chart(fig, use_container_width=True)
 
-    with analytics_col_2:
-        pollutant_df = pd.DataFrame({
-            "Pollutant": ["PM2.5", "PM10", "NO₂", "SO₂", "CO", "O₃"],
-            city_a: [summary_a["avg_pm25"], summary_a["avg_pm25"] * 1.25, summary_a["avg_pm25"] * 0.65, summary_a["avg_pm25"] * 0.4, summary_a["avg_pm25"] * 0.3, summary_a["avg_pm25"] * 0.45],
-            city_b: [summary_b["avg_pm25"], summary_b["avg_pm25"] * 1.25, summary_b["avg_pm25"] * 0.65, summary_b["avg_pm25"] * 0.4, summary_b["avg_pm25"] * 0.3, summary_b["avg_pm25"] * 0.45],
-        })
-        pollutant_fig = go.Figure()
-        pollutant_fig.add_trace(go.Bar(x=pollutant_df["Pollutant"], y=pollutant_df[city_a], name=city_a, marker_color="#4f46e5"))
-        pollutant_fig.add_trace(go.Bar(x=pollutant_df["Pollutant"], y=pollutant_df[city_b], name=city_b, marker_color="#14b8a6"))
-        pollutant_fig.update_layout(barmode="group", height=280, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(pollutant_fig, use_container_width=True)
+    
+    pollutant_df = pd.DataFrame({
+        "Pollutant": ["PM2.5", "PM10", "NO₂", "SO₂", "CO", "O₃"],
+        city_a: [summary_a["avg_pm25"], summary_a["avg_pm25"] * 1.25, summary_a["avg_pm25"] * 0.65, summary_a["avg_pm25"] * 0.4, summary_a["avg_pm25"] * 0.3, summary_a["avg_pm25"] * 0.45],
+        city_b: [summary_b["avg_pm25"], summary_b["avg_pm25"] * 1.25, summary_b["avg_pm25"] * 0.65, summary_b["avg_pm25"] * 0.4, summary_b["avg_pm25"] * 0.3, summary_b["avg_pm25"] * 0.45],
+    })
+    pollutant_fig = go.Figure()
+    pollutant_fig.add_trace(go.Bar(x=pollutant_df["Pollutant"], y=pollutant_df[city_a], name=city_a, marker_color="#4f46e5"))
+    pollutant_fig.add_trace(go.Bar(x=pollutant_df["Pollutant"], y=pollutant_df[city_b], name=city_b, marker_color="#14b8a6"))
+    pollutant_fig.update_layout(barmode="group", height=280, margin=dict(l=10, r=10, t=10, b=10))
+    st.plotly_chart(pollutant_fig, use_container_width=True)
 
-    hourly_col, source_col = st.columns([1, 1])
-    with hourly_col:
-        hourly_matrix = pd.DataFrame({
-            "hour": np.arange(24),
-            "Mon": np.linspace(70, 140, 24),
-            "Tue": np.linspace(72, 145, 24),
-            "Wed": np.linspace(74, 148, 24),
-            "Thu": np.linspace(76, 150, 24),
-            "Fri": np.linspace(78, 152, 24),
-            "Sat": np.linspace(68, 138, 24),
-            "Sun": np.linspace(66, 134, 24),
-        })
-        heatmap_fig = go.Figure(data=go.Heatmap(z=hourly_matrix[["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]].T.values, x=hourly_matrix["hour"], y=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], colorscale="Viridis"))
-        heatmap_fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Hour of day")
-        st.plotly_chart(heatmap_fig, use_container_width=True)
+    # source_col = st.columns(1)
+    # with hourly_col:
+    #     hourly_matrix = pd.DataFrame({
+    #         "hour": np.arange(24),
+    #         "Mon": np.linspace(70, 140, 24),
+    #         "Tue": np.linspace(72, 145, 24),
+    #         "Wed": np.linspace(74, 148, 24),
+    #         "Thu": np.linspace(76, 150, 24),
+    #         "Fri": np.linspace(78, 152, 24),
+    #         "Sat": np.linspace(68, 138, 24),
+    #         "Sun": np.linspace(66, 134, 24),
+    #     })
+    #     heatmap_fig = go.Figure(data=go.Heatmap(z=hourly_matrix[["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]].T.values, x=hourly_matrix["hour"], y=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], colorscale="Viridis"))
+    #     heatmap_fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Hour of day")
+    #     st.plotly_chart(heatmap_fig, use_container_width=True)
 
-    with source_col:
-        source_profile_a = {
-            "Traffic": 0.48,
-            "Construction": 0.21,
-            "Industry": 0.14,
-            "Waste Burning": 0.10,
-            "Dust": 0.05,
-            "Biomass": 0.02,
-        }
-        source_profile_b = {
-            "Traffic": 0.36,
-            "Construction": 0.17,
-            "Industry": 0.11,
-            "Waste Burning": 0.07,
-            "Dust": 0.07,
-            "Biomass": 0.22,
-        }
-        source_df = pd.DataFrame({
-            "Source": list(source_profile_a.keys()),
-            city_a: [source_profile_a[k] * 100 for k in source_profile_a],
-            city_b: [source_profile_b[k] * 100 for k in source_profile_b],
-        })
-        source_fig = go.Figure()
-        source_fig.add_trace(go.Bar(y=source_df["Source"], x=source_df[city_a], name=city_a, orientation="h", marker_color="#4f46e5"))
-        source_fig.add_trace(go.Bar(y=source_df["Source"], x=source_df[city_b], name=city_b, orientation="h", marker_color="#14b8a6"))
-        source_fig.update_layout(barmode="stack", height=280, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Contribution (%)")
-        st.plotly_chart(source_fig, use_container_width=True)
+    
+    source_profile_a = {
+        "Traffic": 0.48,
+        "Construction": 0.21,
+        "Industry": 0.14,
+        "Waste Burning": 0.10,
+        "Dust": 0.05,
+        "Biomass": 0.02,
+    }
+    source_profile_b = {
+        "Traffic": 0.36,
+        "Construction": 0.17,
+        "Industry": 0.11,
+        "Waste Burning": 0.07,
+        "Dust": 0.07,
+        "Biomass": 0.22,
+    }
+    source_df = pd.DataFrame({
+        "Source": list(source_profile_a.keys()),
+        city_a: [source_profile_a[k] * 100 for k in source_profile_a],
+        city_b: [source_profile_b[k] * 100 for k in source_profile_b],
+    })
+    source_fig = go.Figure()
+    source_fig.add_trace(go.Bar(y=source_df["Source"], x=source_df[city_a], name=city_a, orientation="h", marker_color="#4f46e5"))
+    source_fig.add_trace(go.Bar(y=source_df["Source"], x=source_df[city_b], name=city_b, orientation="h", marker_color="#14b8a6"))
+    source_fig.update_layout(barmode="stack", height=280, margin=dict(l=10, r=10, t=10, b=10), xaxis_title="Contribution (%)")
+    st.plotly_chart(source_fig, use_container_width=True)
 
     radar_col, box_col = st.columns([1, 1])
     with radar_col:
@@ -716,50 +965,50 @@ with tab_insights:
         dist_fig.update_layout(margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(dist_fig, use_container_width=True)
 
-    forecast_col, ward_col = st.columns([1, 1])
-    with forecast_col:
-        forecast_fig = go.Figure()
-        actual_series = summary_a["daily"]["aqi"].tail(14).tolist()
-        forecast_series = [actual_series[-1] * 0.98 + i * 0.6 for i in range(1, 8)]
-        forecast_fig.add_trace(go.Scatter(x=list(range(1, 15)), y=actual_series + [None] * 7, mode="lines+markers", name=f"Actual {city_a}"))
-        forecast_fig.add_trace(go.Scatter(x=list(range(14, 21)), y=forecast_series, mode="lines+markers", name=f"Forecast {city_a}", line=dict(dash="dash")))
-        st.plotly_chart(forecast_fig, use_container_width=True)
+    # forecast_col, ward_col = st.columns([1, 1])
+    # with forecast_col:
+    #     forecast_fig = go.Figure()
+    #     actual_series = summary_a["daily"]["aqi"].tail(14).tolist()
+    #     forecast_series = [actual_series[-1] * 0.98 + i * 0.6 for i in range(1, 8)]
+    #     forecast_fig.add_trace(go.Scatter(x=list(range(1, 15)), y=actual_series + [None] * 7, mode="lines+markers", name=f"Actual {city_a}"))
+    #     forecast_fig.add_trace(go.Scatter(x=list(range(14, 21)), y=forecast_series, mode="lines+markers", name=f"Forecast {city_a}", line=dict(dash="dash")))
+    #     st.plotly_chart(forecast_fig, use_container_width=True)
 
-    with ward_col:
-        ward_rows = []
-        for idx, station in enumerate(frame_a["station"].dropna().unique()[:6], 1):
-            ward_rows.append({
-                "Ward": f"{city_a} Ward {idx}",
-                "AQI": round(float(frame_a[frame_a["station"] == station]["aqi"].mean()), 1),
-                "Primary Source": "Traffic" if idx % 2 == 0 else "Construction",
-                "Trend": "Worsening" if idx % 2 else "Improving",
-                "Compliance": round(80 + idx * 2, 1),
-                "Risk Score": round(60 + idx * 5, 1),
-            })
-        ward_df = pd.DataFrame(ward_rows)
-        st.dataframe(ward_df, use_container_width=True, hide_index=True)
+    # with ward_col:
+    ward_rows = []
+    for idx, station in enumerate(frame_a["station"].dropna().unique()[:6], 1):
+        ward_rows.append({
+            "Ward": f"{city_a} Ward {idx}",
+            "AQI": round(float(frame_a[frame_a["station"] == station]["aqi"].mean()), 1),
+            "Primary Source": "Traffic" if idx % 2 == 0 else "Construction",
+            "Trend": "Worsening" if idx % 2 else "Improving",
+            "Compliance": round(80 + idx * 2, 1),
+            "Risk Score": round(60 + idx * 5, 1),
+        })
+    ward_df = pd.DataFrame(ward_rows)
+    st.dataframe(ward_df, use_container_width=True, hide_index=True)
 
     st.divider()
 
-    st.markdown("<h4 style='margin-bottom: 0.25rem;'>Intervention Intelligence</h4>", unsafe_allow_html=True)
-    intervention_col_1, intervention_col_2 = st.columns([1, 1])
-    with intervention_col_1:
-        st.markdown("<div style='border:1px solid #dbeafe; border-radius: 12px; padding: 1rem; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);'>"
-                    "<div style='font-size:0.82rem; color:#64748b;'>Successful Intervention</div>"
-                    f"<div style='font-size:1.1rem; font-weight:700; margin-top:0.25rem;'>{city_b} · Traffic Diversion</div>"
-                    "<div style='margin-top:0.35rem;'>Reduced PM2.5 by 18% with 94% confidence.</div></div>", unsafe_allow_html=True)
-        st.markdown("<div style='border:1px solid #dcfce7; border-radius: 12px; padding: 1rem; margin-top:0.75rem; background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);'>"
-                    "<div style='font-size:0.82rem; color:#64748b;'>Similar Zone Detected</div>"
-                    f"<div style='font-size:1.1rem; font-weight:700; margin-top:0.25rem;'>{city_a} Ward 42 matches {city_b} Ward 18</div>"
-                    "<div style='margin-top:0.35rem;'>Similarity score 91% · same traffic and construction profile.</div></div>", unsafe_allow_html=True)
+    # st.markdown("<h4 style='margin-bottom: 0.25rem;'>Intervention Intelligence</h4>", unsafe_allow_html=True)
+    # intervention_col_1, intervention_col_2 = st.columns([1, 1])
+    # with intervention_col_1:
+    #     st.markdown("<div style='border:1px solid #dbeafe; border-radius: 12px; padding: 1rem; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 100%);'>"
+    #                 "<div style='font-size:0.82rem; color:#64748b;'>Successful Intervention</div>"
+    #                 f"<div style='font-size:1.1rem; font-weight:700; color:#0f766e; margin-top:0.25rem;'>{city_b} · Traffic Diversion</div>"
+    #                 "<div style='margin-top:0.35rem;'>Reduced PM2.5 by 18% with 94% confidence.</div></div>", unsafe_allow_html=True)
+    #     st.markdown("<div style='border:1px solid #dcfce7; border-radius: 12px; padding: 1rem; margin-top:0.75rem; background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);'>"
+    #                 "<div style='font-size:0.82rem; color:#64748b;'>Similar Zone Detected</div>"
+    #                 f"<div style='font-size:1.1rem; font-weight:700; color:#0f766e; margin-top:0.25rem;'>{city_a} Ward 42 matches {city_b} Ward 18</div>"
+    #                 "<div style='margin-top:0.35rem;'>Similarity score 91% · same traffic and construction profile.</div></div>", unsafe_allow_html=True)
 
-    with intervention_col_2:
-        green_cover = st.slider("Increase Green Cover (%)", 0, 20, 10)
-        heavy_vehicles = st.slider("Reduce Heavy Vehicles (%)", 0, 40, 25)
-        compliance = st.slider("Construction Compliance (%)", 60, 100, 90)
-        projected_aqi = max(60, round(summary_a["avg_aqi"] * (1 - green_cover / 100 * 0.08) * (1 - heavy_vehicles / 100 * 0.06) * (1 - (100 - compliance) / 100 * 0.03), 1))
-        st.metric("Projected AQI", f"{summary_a['avg_aqi']:.0f} → {projected_aqi:.0f}", f"~{summary_a['avg_aqi'] - projected_aqi:.0f} reduction")
-        st.caption("This scenario assumes improved green cover, reduced diesel freight, and stronger enforcement compliance.")
+    # with intervention_col_2:
+    #     green_cover = st.slider("Increase Green Cover (%)", 0, 20, 10)
+    #     heavy_vehicles = st.slider("Reduce Heavy Vehicles (%)", 0, 40, 25)
+    #     compliance = st.slider("Construction Compliance (%)", 60, 100, 90)
+    #     projected_aqi = max(60, round(summary_a["avg_aqi"] * (1 - green_cover / 100 * 0.08) * (1 - heavy_vehicles / 100 * 0.06) * (1 - (100 - compliance) / 100 * 0.03), 1))
+    #     st.metric("Projected AQI", f"{summary_a['avg_aqi']:.0f} → {projected_aqi:.0f}", f"~{summary_a['avg_aqi'] - projected_aqi:.0f} reduction")
+    #     st.caption("This scenario assumes improved green cover, reduced diesel freight, and stronger enforcement compliance.")
 
     st.divider()
 
@@ -782,19 +1031,7 @@ with tab_insights:
     for idx, (title, impact, cost, timeline) in enumerate(recs):
         with recommendation_cols[idx]:
             st.markdown(f"<div style='border:1px solid #e2e8f0; border-radius: 12px; padding: 0.8rem; background:white;'>"
-                        f"<div style='font-weight:700;'>{title}</div>"
+                        f"<div style='font-weight:700; color:#475569'>{title}</div>"
                         f"<div style='font-size:0.85rem; color:#475569; margin-top:0.25rem;'>{impact}</div>"
                         f"<div style='font-size:0.85rem; color:#475569;'>{cost}</div>"
                         f"<div style='font-size:0.85rem; color:#475569;'>{timeline}</div></div>", unsafe_allow_html=True)
-
-    st.download_button(
-        label="Export briefing",
-        data=f"Briefing for {city_a} vs {city_b}\n\nSummary: {city_b} outperformed {city_a} on the selected window. Focus on traffic management, dust suppression, and enforcement escalation.",
-        file_name=f"{city_a}_vs_{city_b}_briefing.md",
-        mime="text/markdown",
-    )
-
-# ========== SETTINGS TAB ==========
-with tab_settings:
-    st.header("⚙️ Settings & Configuration")
-    st.info("💡 Coming soon: API key configuration, data refresh rate, notification preferences, and export options.")

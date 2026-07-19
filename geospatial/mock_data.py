@@ -207,6 +207,50 @@ def mock_fire_data(lat: float, lon: float, radius_km: float) -> Dict:
     }
 
 
+def mock_traffic(lat: float, lon: float) -> Dict:
+    """Generate synthetic TomTom-style traffic flow / congestion data.
+
+    Congestion is modeled as heavier near the same synthetic "urban cores"
+    used by mock_aqi / mock_geospatial, so demo data stays internally
+    consistent (denser urban areas => more traffic => higher pollution).
+    """
+    rng = _rng(lat, lon, "traffic")
+
+    urban_factor = abs(0.5 + 0.5 * math.sin(lat * 12.9) * math.cos(lon * 7.3))
+
+    free_flow_speed = float(np.clip(rng.normal(48, 10), 15, 90))
+    congestion_ratio = float(np.clip(rng.beta(2, 3) * (0.35 + urban_factor * 0.9), 0.0, 0.95))
+    current_speed = max(2.0, free_flow_speed * (1 - congestion_ratio))
+
+    free_flow_travel_time = float(np.clip(rng.normal(180, 60), 30, 900))
+    current_travel_time = free_flow_travel_time * (1 + congestion_ratio * 1.3)
+
+    if congestion_ratio < 0.10:
+        level = "Free Flow"
+    elif congestion_ratio < 0.30:
+        level = "Light"
+    elif congestion_ratio < 0.55:
+        level = "Moderate"
+    elif congestion_ratio < 0.75:
+        level = "Heavy"
+    else:
+        level = "Severe"
+
+    return {
+        "current_speed_kmph": round(current_speed, 1),
+        "free_flow_speed_kmph": round(free_flow_speed, 1),
+        "current_travel_time_s": round(current_travel_time),
+        "free_flow_travel_time_s": round(free_flow_travel_time),
+        "congestion_ratio": round(congestion_ratio, 3),
+        "congestion_pct": round(congestion_ratio * 100, 1),
+        "congestion_level": level,
+        "confidence": round(float(rng.uniform(0.6, 0.95)), 2),
+        "road_closure": bool(rng.random() < 0.03),
+        "road_class": "FRC2",
+        "source": "synthetic_mock",
+    }
+
+
 SAMPLE_LOCATIONS = [
     {"name": "Anand Vihar, Delhi", "latitude": 28.6469, "longitude": 77.3152},
     {"name": "Connaught Place, Delhi", "latitude": 28.6315, "longitude": 77.2167},
