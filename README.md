@@ -2,7 +2,7 @@
 
 **A geospatial AI platform that turns raw air-quality readings into evidence-backed, source-attributed, hyperlocal intervention plans for city administrators — not just another dashboard.**
 
-🔗 **Live demo:** [your-deployment-url-here.netlify.app](https://your-deployment-url-here.netlify.app) *(update after deploy)*
+🔗 **Live demo:** [air-quality-intelligence-eti.streamlit.app](https://air-quality-intelligence-eti.streamlit.app/)
 
 ---
 
